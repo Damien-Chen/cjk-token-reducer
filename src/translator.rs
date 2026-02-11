@@ -44,7 +44,38 @@ static CIRCUIT_BREAKER: OnceLock<CircuitBreaker> = OnceLock::new();
 /// Global rate limiter for backpressure handling
 static RATE_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 
-/// Get or initialize the circuit breaker with default config
+/// Build an HTTP client configured with the given resilience timeouts.
+///
+/// Single source of truth for client settings -- used by both `init_resilience`
+/// and the `get_http_client` fallback so the builder chain is never duplicated.
+fn build_http_client(config: &ResilienceConfig) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(config.timeout_secs))
+        .connect_timeout(Duration::from_secs(config.connect_timeout_secs))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(MAX_CONCURRENT_TRANSLATIONS + 2)
+        .tcp_keepalive(Duration::from_secs(60))
+        .tcp_nodelay(true)
+        .http2_adaptive_window(true)
+        .gzip(true)
+        .brotli(true)
+        .build()
+        .expect("Failed to create HTTP client")
+}
+
+/// Initialize resilience infrastructure with user config.
+///
+/// Seeds the OnceLock singletons (circuit breaker, rate limiter, HTTP client)
+/// so they use the caller's ResilienceConfig instead of hardcoded defaults.
+/// First call wins (OnceLock semantics), so this should be called before
+/// any translation request.
+fn init_resilience(config: &ResilienceConfig) {
+    CIRCUIT_BREAKER.get_or_init(|| CircuitBreaker::new(config));
+    RATE_LIMITER.get_or_init(RateLimiter::new);
+    HTTP_CLIENT.get_or_init(|| build_http_client(config));
+}
+
+/// Get or initialize the circuit breaker (fallback to defaults if init_resilience not called)
 fn get_circuit_breaker() -> &'static CircuitBreaker {
     CIRCUIT_BREAKER.get_or_init(|| CircuitBreaker::new(&ResilienceConfig::default()))
 }
@@ -84,22 +115,9 @@ fn get_user_agent() -> &'static str {
 /// - TCP_NODELAY: reduced latency for small requests
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
-/// Get or initialize the shared HTTP client
+/// Get or initialize the shared HTTP client (fallback to defaults if init_resilience not called)
 fn get_http_client() -> &'static reqwest::Client {
-    HTTP_CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .connect_timeout(Duration::from_secs(5)) // Fail fast, let retry handle transient issues
-            .pool_idle_timeout(Duration::from_secs(90))
-            .pool_max_idle_per_host(MAX_CONCURRENT_TRANSLATIONS + 2) // >= concurrent for optimal reuse
-            .tcp_keepalive(Duration::from_secs(60))
-            .tcp_nodelay(true) // Reduce latency for small requests
-            .http2_adaptive_window(true) // Enable HTTP/2 with adaptive flow control
-            .gzip(true) // Enable gzip decompression
-            .brotli(true) // Enable brotli decompression
-            .build()
-            .expect("Failed to create HTTP client")
-    })
+    HTTP_CLIENT.get_or_init(|| build_http_client(&ResilienceConfig::default()))
 }
 
 /// Split text into chunks at natural boundaries
@@ -210,29 +228,24 @@ fn find_split_point_single_pass(text: &str) -> usize {
 /// Uses `buffered()` instead of `buffer_unordered()` to preserve chunk order.
 /// This is critical for correctness - translations must be reassembled in order.
 /// Each chunk has retry with exponential backoff for transient failures.
-async fn translate_chunks(chunks: Vec<&str>, source_lang: Language) -> Result<Vec<String>> {
+async fn translate_chunks(
+    chunks: Vec<&str>,
+    source_lang: Language,
+    config: &ResilienceConfig,
+) -> Result<Vec<String>> {
     use futures::stream::{self, StreamExt};
 
-    let results: Vec<Result<String>> = stream::iter(chunks)
-        .map(|chunk| async move { google_translate_with_retry(chunk, source_lang).await })
-        .buffered(MAX_CONCURRENT_TRANSLATIONS) // buffered preserves order, buffer_unordered does not!
-        .collect()
-        .await;
+    let results: Vec<Result<String>> =
+        stream::iter(chunks)
+            .map(|chunk| async move {
+                google_translate_with_retry_config(chunk, source_lang, config).await
+            })
+            .buffered(MAX_CONCURRENT_TRANSLATIONS) // buffered preserves order, buffer_unordered does not!
+            .collect()
+            .await;
 
     // Collect results, propagating first error
     results.into_iter().collect()
-}
-
-/// Translate with exponential backoff retry for transient failures
-///
-/// Features:
-/// - Circuit breaker prevents cascading failures
-/// - Rate limiter handles backpressure from 429 responses
-/// - Exponential backoff with jitter to prevent thundering herd
-/// - Configurable retry attempts and delays
-async fn google_translate_with_retry(text: &str, source_lang: Language) -> Result<String> {
-    let config = ResilienceConfig::default();
-    google_translate_with_retry_config(text, source_lang, &config).await
 }
 
 /// Translate with retry using explicit config
@@ -251,7 +264,10 @@ async fn google_translate_with_retry_config(
 
     let mut last_error = None;
 
-    for attempt in 0..config.max_retries {
+    // Always attempt at least once, then retry up to (max_retries - 1) more times
+    let total_attempts = config.max_retries.max(1);
+
+    for attempt in 0..total_attempts {
         // Apply rate limiting backpressure
         rl.wait_if_needed().await;
 
@@ -273,7 +289,7 @@ async fn google_translate_with_retry_config(
                 // Check if error is retryable
                 let is_retryable = e.is_retryable();
 
-                if !is_retryable || attempt == config.max_retries - 1 {
+                if !is_retryable || attempt == total_attempts - 1 {
                     // Record failure for circuit breaker
                     cb.record_failure();
                     return Err(e);
@@ -298,16 +314,20 @@ async fn google_translate_with_retry_config(
 }
 
 /// Translate text, automatically chunking if too long
-async fn translate_with_chunking(text: &str, source_lang: Language) -> Result<String> {
+async fn translate_with_chunking(
+    text: &str,
+    source_lang: Language,
+    config: &ResilienceConfig,
+) -> Result<String> {
     let chunks = chunk_text(text);
 
     if chunks.len() == 1 {
         // Single chunk, translate directly (with retry)
-        return google_translate_with_retry(chunks[0], source_lang).await;
+        return google_translate_with_retry_config(chunks[0], source_lang, config).await;
     }
 
     // Multiple chunks, translate in parallel and join
-    let translated_chunks = translate_chunks(chunks, source_lang).await?;
+    let translated_chunks = translate_chunks(chunks, source_lang, config).await?;
     Ok(translated_chunks.join(""))
 }
 
@@ -329,6 +349,9 @@ pub async fn translate_to_english_with_options(
     use_cache: bool,
 ) -> Result<TranslationResult> {
     let detection = detect_language(text);
+
+    // Seed resilience singletons with user config (first call wins via OnceLock)
+    init_resilience(&config.resilience);
 
     // Check threshold - skip if below or already English
     if detection.ratio < config.threshold || detection.language == Language::English {
@@ -389,8 +412,12 @@ pub async fn translate_to_english_with_options(
     }
 
     // Call Google Translate (with chunking for long inputs)
-    let translated_text =
-        translate_with_chunking(&text_for_translation, detection.language).await?;
+    let translated_text = translate_with_chunking(
+        &text_for_translation,
+        detection.language,
+        &config.resilience,
+    )
+    .await?;
 
     // Store in cache (reuse opened instance)
     if let Some(ref c) = cache {
@@ -515,7 +542,10 @@ pub fn get_resilience_stats() -> ResilienceStats {
     }
 }
 
-/// Reset resilience state (useful for testing or after configuration changes)
+/// Reset resilience counters (failure counts, rate limiter delay).
+///
+/// Does NOT change frozen OnceLock config (thresholds, timeouts).
+/// Intended for testing only.
 pub fn reset_resilience_state() {
     get_circuit_breaker().reset();
     get_rate_limiter().reset();
