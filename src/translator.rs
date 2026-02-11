@@ -394,7 +394,7 @@ pub async fn translate_to_english_with_options(
         if let Some(key) = &cache_key {
             if let Some(entry) = c.get(key) {
                 // Cache hit - restore preserved segments and return
-                let final_text = restore_preserved(&entry.translated, &preserved.segments);
+                let final_text = restore_preserved(&entry.translated, &preserved);
                 let input_tokens = count_tokens(text);
                 let output_tokens = count_tokens(&final_text);
 
@@ -433,7 +433,7 @@ pub async fn translate_to_english_with_options(
     }
 
     // Restore preserved segments
-    let final_text = restore_preserved(&translated_text, &preserved.segments);
+    let final_text = restore_preserved(&translated_text, &preserved);
 
     // Count tokens using Claude's tokenizer
     let input_tokens = count_tokens(text);

@@ -21,6 +21,9 @@ pub enum SegmentType {
 pub struct PreserveResult {
     pub text: String,
     pub segments: Vec<PreservedSegment>,
+    /// True if input contained `\u{FEFF}` characters that were stripped to prevent
+    /// placeholder collisions.
+    pub sanitized: bool,
 }
 
 // LazyLock-compiled regexes (compiled once, reused)
@@ -702,6 +705,23 @@ fn replace_with_placeholders(
         .into_owned()
 }
 
+/// Strip `\u{FEFF}` (BOM / zero-width no-break space) from input to prevent
+/// placeholder collisions.
+///
+/// Placeholders use `\u{FEFF}cjk...\u{FEFF}` as their format.  If user input
+/// already contains `\u{FEFF}`, `restore_preserved` would silently replace it
+/// with placeholder content, corrupting the output.  Since `\u{FEFF}` is an
+/// invisible control character with no semantic value in CJK prompt text,
+/// stripping it is safe and eliminates the entire collision class.
+///
+/// Returns `(sanitized_text, did_sanitize)`.
+fn sanitize_placeholder_markers(text: &str) -> (String, bool) {
+    if !text.contains('\u{FEFF}') {
+        return (text.to_string(), false);
+    }
+    (text.replace('\u{FEFF}', ""), true)
+}
+
 /// Extract code blocks, inline code, URLs, and file paths, replacing with placeholders
 /// Uses default config (basic preservation only)
 pub fn extract_and_preserve(text: &str) -> PreserveResult {
@@ -710,6 +730,11 @@ pub fn extract_and_preserve(text: &str) -> PreserveResult {
 
 /// Extract and preserve with configurable options
 pub fn extract_and_preserve_with_config(text: &str, config: &PreserveConfig) -> PreserveResult {
+    // Strip any existing \u{FEFF} characters to prevent placeholder collisions.
+    // User input containing \u{FEFF}cjk...\u{FEFF} would otherwise cause silent
+    // data corruption during restore_preserved().
+    let (sanitized_text, sanitized) = sanitize_placeholder_markers(text);
+
     let mut segments = Vec::new();
     let mut index = 0;
 
@@ -718,7 +743,7 @@ pub fn extract_and_preserve_with_config(text: &str, config: &PreserveConfig) -> 
 
     // 1. Code blocks (highest priority - multiline)
     let mut result = replace_with_placeholders(
-        text,
+        &sanitized_text,
         &CODE_BLOCK_RE,
         SegmentType::CodeBlock,
         &mut segments,
@@ -805,15 +830,20 @@ pub fn extract_and_preserve_with_config(text: &str, config: &PreserveConfig) -> 
     PreserveResult {
         text: result,
         segments,
+        sanitized,
     }
 }
 
-/// Restore preserved segments back to original text
-pub fn restore_preserved(text: &str, segments: &[PreservedSegment]) -> String {
+/// Restore preserved segments back to original text.
+///
+/// Takes the full `PreserveResult` so the caller doesn't need to destructure it.
+/// Any `\u{FEFF}` characters in the original input were stripped during extraction
+/// (see `sanitize_placeholder_markers`), so no unescaping is needed here.
+pub fn restore_preserved(text: &str, preserved: &PreserveResult) -> String {
     let mut result = text.to_string();
     // Restore in reverse order to avoid collisions where a restored segment
     // contains text that looks like a later placeholder.
-    for segment in segments.iter().rev() {
+    for segment in preserved.segments.iter().rev() {
         result = result.replace(&segment.placeholder, &segment.original);
     }
     result
@@ -880,7 +910,7 @@ mod tests {
         let text = "코드 `foo()` 수정 ```\nbar()
 ```";
         let preserved = extract_and_preserve(text);
-        let restored = restore_preserved(&preserved.text, &preserved.segments);
+        let restored = restore_preserved(&preserved.text, &preserved);
         assert!(restored.contains("`foo()`"));
         assert!(restored.contains(
             "```\nbar()
@@ -901,8 +931,131 @@ mod tests {
         // Then `__PRESERVE_URL_1__` -> https://example.com (WRONG)
         let text = "Code: `__PRESERVE_URL_1__` Link: https://example.com";
         let preserved = extract_and_preserve(text);
-        let restored = restore_preserved(&preserved.text, &preserved.segments);
+        let restored = restore_preserved(&preserved.text, &preserved);
         assert_eq!(restored, text);
+    }
+
+    // === Placeholder Collision Validation Tests ===
+
+    #[test]
+    fn test_feff_in_input_no_corruption() {
+        // Input containing the exact placeholder format must NOT cause data corruption.
+        // Without sanitization, restore_preserved would replace user text with
+        // segment originals. After sanitization, FEFF is stripped so the fake
+        // placeholder becomes plain text "cjkcode0" which is harmless.
+        let text = "text \u{FEFF}cjkcode0\u{FEFF} more text `real_code()`";
+        let preserved = extract_and_preserve(text);
+        // Intermediate text must be FEFF-free (only our generated placeholders remain)
+        assert!(
+            !preserved.text.contains('\u{FEFF}')
+                || preserved
+                    .segments
+                    .iter()
+                    .any(|s| s.placeholder.contains('\u{FEFF}')),
+            "sanitized text should only contain FEFF inside generated placeholders"
+        );
+        let restored = restore_preserved(&preserved.text, &preserved);
+        // Exact expected output: FEFF stripped, code block restored
+        assert_eq!(restored, "text cjkcode0 more text `real_code()`");
+    }
+
+    #[test]
+    fn test_sanitized_flag_set() {
+        let text_with_feff = "hello \u{FEFF} world";
+        let result = extract_and_preserve(text_with_feff);
+        assert!(
+            result.sanitized,
+            "sanitized flag should be true when input contains FEFF"
+        );
+
+        let text_without_feff = "hello world";
+        let result = extract_and_preserve(text_without_feff);
+        assert!(
+            !result.sanitized,
+            "sanitized flag should be false for normal input"
+        );
+    }
+
+    #[test]
+    fn test_feff_bom_stripped() {
+        // BOM (\u{FEFF}) at start of text is stripped (zero-width, no visible change)
+        let text = "\u{FEFF}이 코드 수정해줘 `foo()`";
+        let preserved = extract_and_preserve(text);
+        let restored = restore_preserved(&preserved.text, &preserved);
+        // Visible content preserved, BOM stripped
+        assert!(restored.contains("`foo()`"));
+        assert!(!restored.contains('\u{FEFF}'));
+    }
+
+    #[test]
+    fn test_feff_inside_code_block_stripped() {
+        // FEFF inside preserved content is stripped during extraction
+        let text = "코드: `x\u{FEFF}y` 수정해줘";
+        let preserved = extract_and_preserve(text);
+        let restored = restore_preserved(&preserved.text, &preserved);
+        // The inline code segment should have FEFF stripped
+        assert!(restored.contains("`xy`"));
+    }
+
+    #[test]
+    fn test_adversarial_placeholder_injection() {
+        // Adversarial input that exactly matches what the placeholder system generates.
+        // Sanitization strips the FEFF delimiters, so the fake placeholder becomes
+        // plain text "cjkinline0" which can never match a real placeholder.
+        let fake_placeholder = "\u{FEFF}cjkinline0\u{FEFF}";
+        let text = format!("Fake: {fake_placeholder} Real: `actual_code()`");
+        let preserved = extract_and_preserve(&text);
+        let restored = restore_preserved(&preserved.text, &preserved);
+        // Real code block is correctly restored
+        assert!(restored.contains("`actual_code()`"));
+        // Fake placeholder text survives as "cjkinline0" (FEFF stripped)
+        assert!(restored.contains("cjkinline0"));
+        // No FEFF in output
+        assert!(!restored.contains('\u{FEFF}'));
+    }
+
+    #[test]
+    fn test_multiple_feff_all_stripped() {
+        let text = "\u{FEFF}a\u{FEFF}b\u{FEFF}";
+        let preserved = extract_and_preserve(text);
+        let restored = restore_preserved(&preserved.text, &preserved);
+        assert_eq!(restored, "ab");
+    }
+
+    #[test]
+    fn test_sanitize_helper() {
+        let (sanitized, did_sanitize) = sanitize_placeholder_markers("no feff here");
+        assert_eq!(sanitized, "no feff here");
+        assert!(!did_sanitize);
+
+        let (sanitized, did_sanitize) = sanitize_placeholder_markers("has \u{FEFF} marker");
+        assert!(did_sanitize);
+        assert_eq!(sanitized, "has  marker");
+        assert!(!sanitized.contains('\u{FEFF}'));
+    }
+
+    #[test]
+    fn test_normal_input_unaffected_by_sanitization() {
+        // Normal input without FEFF should be completely unaffected
+        let text = "이 함수 `foo()` 호출해줘 https://example.com";
+        let preserved = extract_and_preserve(text);
+        assert!(!preserved.sanitized);
+        let restored = restore_preserved(&preserved.text, &preserved);
+        assert_eq!(restored, text);
+    }
+
+    #[test]
+    fn test_fake_placeholder_with_multiple_real_segments() {
+        // Multiple real preserved segments plus a fake FEFF placeholder.
+        // Ensures sanitization doesn't interfere with multi-segment restoration.
+        let text = "`code1()` and \u{FEFF}cjkinline0\u{FEFF} and `code2()` https://example.com";
+        let preserved = extract_and_preserve(text);
+        let restored = restore_preserved(&preserved.text, &preserved);
+        // Real segments restored, fake placeholder has FEFF stripped
+        assert_eq!(
+            restored,
+            "`code1()` and cjkinline0 and `code2()` https://example.com"
+        );
     }
 
     // === No-Translate Marker Tests ===
@@ -974,7 +1127,7 @@ mod tests {
         let text = "이 함수는 [[getUserData]]를 호출합니다";
         let config = PreserveConfig::all();
         let result = extract_and_preserve_with_config(text, &config);
-        let restored = restore_preserved(&result.text, &result.segments);
+        let restored = restore_preserved(&result.text, &result);
         // Restored should have inner content (markers stripped)
         assert!(restored.contains("getUserData"));
         // But not the markers themselves
@@ -1205,7 +1358,7 @@ mod tests {
     fn test_extract_preserve_restore_roundtrip_simple() {
         let text = "이 함수 `foo()`를 호출하세요";
         let preserved = extract_and_preserve(text);
-        let restored = restore_preserved(&preserved.text, &preserved.segments);
+        let restored = restore_preserved(&preserved.text, &preserved);
 
         assert_eq!(restored, text);
     }
@@ -1214,7 +1367,7 @@ mod tests {
     fn test_extract_preserve_restore_roundtrip_complex() {
         let text = "이 코드 수정해줘\n```rust\nfn main() {}\n```\nAPI_KEY 환경변수 필요";
         let preserved = extract_and_preserve(text);
-        let restored = restore_preserved(&preserved.text, &preserved.segments);
+        let restored = restore_preserved(&preserved.text, &preserved);
 
         assert_eq!(restored, text);
     }
@@ -1227,7 +1380,7 @@ mod tests {
         let expected = "keep `code` getUserData API ./src/main.rs https://example.com";
         let config = PreserveConfig::all();
         let preserved = extract_and_preserve_with_config(text, &config);
-        let restored = restore_preserved(&preserved.text, &preserved.segments);
+        let restored = restore_preserved(&preserved.text, &preserved);
 
         assert_eq!(restored, expected);
     }
@@ -1386,7 +1539,7 @@ mod tests {
         let result = extract_and_preserve(text);
 
         // Should not crash or corrupt emoji sequence
-        let restored = restore_preserved(&result.text, &result.segments);
+        let restored = restore_preserved(&result.text, &result);
         assert!(restored.contains("👨‍👩‍👧‍👦"));
     }
 
@@ -1394,7 +1547,7 @@ mod tests {
     fn test_multiple_complex_emoji_preservation() {
         let text = "Emojis: 🎉🚀❤️👍🏽🇺🇸 are fun";
         let result = extract_and_preserve(text);
-        let restored = restore_preserved(&result.text, &result.segments);
+        let restored = restore_preserved(&result.text, &result);
 
         // All emoji should be preserved through roundtrip
         assert!(restored.contains("🎉"));
@@ -1408,7 +1561,7 @@ mod tests {
     fn test_emoji_variation_selectors_preservation() {
         let text = "Hearts: ❤ ❤️ are different";
         let result = extract_and_preserve(text);
-        let restored = restore_preserved(&result.text, &result.segments);
+        let restored = restore_preserved(&result.text, &result);
 
         // Both forms should be preserved
         assert!(restored.contains("❤"));
@@ -1419,7 +1572,7 @@ mod tests {
     fn test_korean_japanese_chinese_mixed() {
         let text = "Korean: 안녕 Japanese: こんにちは Chinese: 你好";
         let result = extract_and_preserve(text);
-        let restored = restore_preserved(&result.text, &result.segments);
+        let restored = restore_preserved(&result.text, &result);
 
         // All scripts should be preserved
         assert!(restored.contains("안녕"));
@@ -1432,7 +1585,7 @@ mod tests {
         // 𠮷 = U+20BB7 (CJK Extension B)
         let text = "Use 𠮷 with 🎉 emoji";
         let result = extract_and_preserve(text);
-        let restored = restore_preserved(&result.text, &result.segments);
+        let restored = restore_preserved(&result.text, &result);
 
         // Beyond BMP CJK character should be preserved
         assert!(restored.contains("𠮷"));
@@ -1444,7 +1597,7 @@ mod tests {
         // café with combining acute accent
         let text = "Use café for coffee";
         let result = extract_and_preserve(text);
-        let restored = restore_preserved(&result.text, &result.segments);
+        let restored = restore_preserved(&result.text, &result);
 
         // Combining characters should be preserved
         assert!(restored.contains("café"));
@@ -1454,7 +1607,7 @@ mod tests {
     fn test_preserver_with_zero_width_joiner_in_text() {
         let text = "Check: 👨‍🚀 is astronaut";
         let result = extract_and_preserve(text);
-        let restored = restore_preserved(&result.text, &result.segments);
+        let restored = restore_preserved(&result.text, &result);
 
         // ZWJ sequences should be preserved intact
         assert!(restored.contains("👨‍🚀"));
