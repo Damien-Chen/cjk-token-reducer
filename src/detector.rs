@@ -220,4 +220,55 @@ mod tests {
         assert!(result.ratio > 0.0);
         assert!(result.ratio < 1.0);
     }
+
+    #[test]
+    fn test_language_code() {
+        assert_eq!(Language::Chinese.code(), "zh-TW");
+        assert_eq!(Language::Japanese.code(), "ja");
+        assert_eq!(Language::Korean.code(), "ko");
+        assert_eq!(Language::English.code(), "en");
+        assert_eq!(Language::Unknown.code(), "auto");
+    }
+
+    #[test]
+    fn test_is_cjk_char_extended_ranges() {
+        // CJK Extension A
+        assert!(is_cjk_char(&'\u{3400}'));
+        // CJK Compatibility Ideographs
+        assert!(is_cjk_char(&'\u{F900}'));
+        // Katakana Phonetic Extensions
+        assert!(is_cjk_char(&'\u{31F0}'));
+        // Hangul Compatibility Jamo
+        assert!(is_cjk_char(&'\u{3130}'));
+        // CJK Symbols and Punctuation (ideographic comma)
+        assert!(is_cjk_char(&'\u{3001}'));
+        // Bopomofo
+        assert!(is_cjk_char(&'\u{3100}'));
+        // Fullwidth Forms (fullwidth exclamation)
+        assert!(is_cjk_char(&'\u{FF01}'));
+        // Non-CJK
+        assert!(!is_cjk_char(&'A'));
+        assert!(!is_cjk_char(&' '));
+        assert!(!is_cjk_char(&'é'));
+    }
+
+    #[test]
+    fn test_is_cjk_char_supplementary_planes() {
+        // CJK Extension B (outside BMP)
+        assert!(is_cjk_char(&'\u{20000}'));
+        assert!(is_cjk_char(&'\u{2A6DF}'));
+        // CJK Extension C
+        assert!(is_cjk_char(&'\u{2A700}'));
+        // CJK Extension G
+        assert!(is_cjk_char(&'\u{30000}'));
+    }
+
+    #[test]
+    fn test_detect_hangul_jamo_extended() {
+        // Hangul Jamo Extended-A (U+A960..U+A97F) and Extended-B (U+D7B0..U+D7FF)
+        // are in is_cjk_char but NOT counted by detect_language's match arms,
+        // so they contribute to total but not to any language score
+        assert!(is_cjk_char(&'\u{A960}'));
+        assert!(is_cjk_char(&'\u{D7B0}'));
+    }
 }

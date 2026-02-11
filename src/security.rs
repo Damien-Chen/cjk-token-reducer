@@ -7,9 +7,9 @@
 //!
 //! Security principle: Never log API keys or full prompt contents.
 
-use once_cell::sync::Lazy;
 use regex::Regex;
 use std::borrow::Cow;
+use std::sync::LazyLock;
 
 /// Maximum length for prompt content in error messages/logs
 const MAX_PROMPT_PREVIEW_LEN: usize = 50;
@@ -30,7 +30,7 @@ const SECRET_PATTERNS: &[&str] = &[
 ];
 
 /// Pre-compiled regex patterns for secret redaction (compiled once at startup)
-static REDACTION_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+static REDACTION_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     let mut patterns = Vec::new();
     for pattern in SECRET_PATTERNS {
         // Match key=value or key: value (handles "Bearer <token>" style)
@@ -309,5 +309,51 @@ mod tests {
         let result = sanitize_for_log(&large_text, 20);
         assert!(result.len() <= 23); // 20 + "..."
         assert!(result.contains("\\n")); // Newlines should be escaped
+    }
+
+    #[test]
+    fn test_redact_secrets_no_secrets() {
+        let input = "This is perfectly normal text without any sensitive data";
+        let result = redact_secrets(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_redact_secrets_preserves_surrounding() {
+        let input = "before api_key=secret123 after";
+        let result = redact_secrets(input);
+        assert!(result.contains("before"));
+        assert!(result.contains("after"));
+        assert!(result.contains("[REDACTED]"));
+        assert!(!result.contains("secret123"));
+    }
+
+    #[test]
+    fn test_sanitize_for_log_carriage_return() {
+        let text = "line1\r\nline2";
+        let result = sanitize_for_log(text, 100);
+        assert!(result.contains("\\r"));
+        assert!(result.contains("\\n"));
+    }
+
+    #[test]
+    fn test_format_prompt_preview_short() {
+        let prompt = "Hi";
+        let preview = format_prompt_preview(prompt);
+        assert!(preview.contains("2 chars"));
+        assert!(!preview.contains("..."));
+    }
+
+    #[test]
+    fn test_looks_like_secret_case_insensitive() {
+        assert!(looks_like_secret("MY_API_KEY=abc"));
+        assert!(looks_like_secret("Authorization: Bearer xyz"));
+        assert!(looks_like_secret("CREDENTIAL_FILE"));
+    }
+
+    #[test]
+    fn test_sensitive_data_warning_constant() {
+        assert!(SENSITIVE_DATA_WARNING.contains("WARNING"));
+        assert!(SENSITIVE_DATA_WARNING.contains("sensitive"));
     }
 }

@@ -306,64 +306,55 @@ fn handle_show_preserved() {
     );
     println!();
 
-    // Print each category
-    if !code_blocks.is_empty() {
-        println!("{} ({})", "Code Blocks".green().bold(), code_blocks.len());
-        for seg in &code_blocks {
-            let preview = if seg.original.len() > 60 {
-                format!("{}...", &seg.original[..57])
-            } else {
-                seg.original.clone()
-            };
-            println!("  {}", preview.replace('\n', "\\n").dimmed());
+    // Print each category with distinct colors
+    let categories: &[(&str, SegmentType, &[&PreservedSegment])] = &[
+        ("Code Blocks", SegmentType::CodeBlock, &code_blocks),
+        ("Inline Code", SegmentType::InlineCode, &inline_code),
+        (
+            "No-Translate Markers",
+            SegmentType::NoTranslate,
+            &no_translate,
+        ),
+        (
+            "English Technical Terms",
+            SegmentType::EnglishTerm,
+            &english_terms,
+        ),
+        ("URLs", SegmentType::Url, &urls),
+        ("File Paths", SegmentType::FilePath, &paths),
+    ];
+    for (name, seg_type, segments) in categories {
+        if segments.is_empty() {
+            continue;
         }
-        println!();
-    }
-
-    if !inline_code.is_empty() {
-        println!("{} ({})", "Inline Code".green().bold(), inline_code.len());
-        for seg in &inline_code {
-            println!("  {}", seg.original.dimmed());
-        }
-        println!();
-    }
-
-    if !no_translate.is_empty() {
-        println!(
-            "{} ({})",
-            "No-Translate Markers".yellow().bold(),
-            no_translate.len()
-        );
-        for seg in &no_translate {
-            println!("  {} (markers stripped)", seg.original.yellow());
-        }
-        println!();
-    }
-
-    if !english_terms.is_empty() {
-        println!(
-            "{} ({})",
-            "English Technical Terms".blue().bold(),
-            english_terms.len()
-        );
-        for seg in &english_terms {
-            println!("  {}", seg.original.blue());
-        }
-        println!();
-    }
-
-    if !urls.is_empty() {
-        println!("{} ({})", "URLs".cyan().bold(), urls.len());
-        for seg in &urls {
-            println!("  {}", seg.original.dimmed());
-        }
-        println!();
-    }
-
-    if !paths.is_empty() {
-        println!("{} ({})", "File Paths".cyan().bold(), paths.len());
-        for seg in &paths {
-            println!("  {}", seg.original.dimmed());
+        // Color header by category: code=green, markers=yellow, terms=blue, urls/paths=cyan
+        let header = match seg_type {
+            SegmentType::CodeBlock | SegmentType::InlineCode => name.green().bold(),
+            SegmentType::NoTranslate => name.yellow().bold(),
+            SegmentType::EnglishTerm => name.blue().bold(),
+            _ => name.cyan().bold(),
+        };
+        println!("{} ({})", header, segments.len());
+        for seg in *segments {
+            match seg_type {
+                SegmentType::CodeBlock => {
+                    let display = if seg.original.len() > 60 {
+                        format!("{}...", &seg.original[..57])
+                    } else {
+                        seg.original.clone()
+                    };
+                    println!("  {}", display.replace('\n', "\\n").dimmed());
+                }
+                SegmentType::NoTranslate => {
+                    println!("  {} (markers stripped)", seg.original.yellow());
+                }
+                SegmentType::EnglishTerm => {
+                    println!("  {}", seg.original.blue());
+                }
+                _ => {
+                    println!("  {}", seg.original.dimmed());
+                }
+            }
         }
         println!();
     }
