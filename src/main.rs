@@ -176,9 +176,13 @@ async fn main() {
         }
         Err(e) => {
             print_error(&format!("Translation failed: {e}"));
-            // Fallback: return original
-            let output = HookOutput { prompt };
-            println!("{}", serde_json::to_string(&output).unwrap());
+            if config.resilience.fallback_to_passthrough {
+                // Graceful degradation: return original untranslated
+                let output = HookOutput { prompt };
+                println!("{}", serde_json::to_string(&output).unwrap());
+            } else {
+                std::process::exit(1);
+            }
         }
     }
 }
