@@ -467,6 +467,78 @@ mod tests {
         cache.clear().unwrap();
     }
 
+    #[cfg(feature = "cache")]
+    #[test]
+    fn test_cache_ttl_expiration() {
+        use crate::config::CacheConfig;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().join("test_ttl.db");
+
+        let config = CacheConfig {
+            enabled: true,
+            ttl_days: 1, // 1 day TTL
+            max_size_mb: 10,
+        };
+
+        let cache = TranslationCache::open_at_path(&config, &cache_path).unwrap();
+
+        // Insert an entry with a timestamp 2 days in the past
+        let key = TranslationCache::make_key("ko", "en", "안녕");
+        let old_entry = CacheEntry {
+            translated: "Hello".to_string(),
+            timestamp: chrono::Utc::now().timestamp() - 2 * 24 * 60 * 60, // 2 days ago
+            source_lang: "ko".to_string(),
+            target_lang: "en".to_string(),
+        };
+
+        cache.put(&key, &old_entry);
+
+        // Should return None (expired) and remove the entry
+        let retrieved = cache.get(&key);
+        assert!(retrieved.is_none(), "Expired entry should not be returned");
+    }
+
+    #[cfg(feature = "cache")]
+    #[test]
+    fn test_cache_miss_nonexistent_key() {
+        use crate::config::CacheConfig;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().join("test_miss.db");
+        let config = CacheConfig::default();
+        let cache = TranslationCache::open_at_path(&config, &cache_path).unwrap();
+
+        assert!(cache.get("nonexistent_key").is_none());
+    }
+
+    #[cfg(feature = "cache")]
+    #[test]
+    fn test_cache_clear_empties_all() {
+        use crate::config::CacheConfig;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().join("test_clear.db");
+        let config = CacheConfig::default();
+        let cache = TranslationCache::open_at_path(&config, &cache_path).unwrap();
+
+        // Insert multiple entries
+        for i in 0..5 {
+            let key = format!("key_{}", i);
+            let entry = CacheEntry {
+                translated: format!("value_{}", i),
+                timestamp: chrono::Utc::now().timestamp(),
+                source_lang: "ko".into(),
+                target_lang: "en".into(),
+            };
+            cache.put(&key, &entry);
+        }
+        assert_eq!(cache.stats().entries, 5);
+
+        cache.clear().unwrap();
+        assert_eq!(cache.stats().entries, 0);
+    }
+
     #[cfg(not(feature = "cache"))]
     #[test]
     fn test_stub_cache_operations() {

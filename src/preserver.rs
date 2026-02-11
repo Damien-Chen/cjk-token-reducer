@@ -1,5 +1,5 @@
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
 #[derive(Debug, Clone)]
 pub struct PreservedSegment {
@@ -23,21 +23,21 @@ pub struct PreserveResult {
     pub segments: Vec<PreservedSegment>,
 }
 
-// Lazy-compiled regexes (compiled once, reused)
-static CODE_BLOCK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"```[\s\S]*?```").unwrap());
-static INLINE_CODE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"`[^`]+`").unwrap());
+// LazyLock-compiled regexes (compiled once, reused)
+static CODE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"```[\s\S]*?```").unwrap());
+static INLINE_CODE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`[^`]+`").unwrap());
 // Exclude trailing punctuation from URLs
-static URL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"https?://[^\s]*[^\s.,;)]").unwrap());
-static FILE_PATH_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?:\.\.?/)?(?:[\w.\-]+/)+[\w.\-]+(?:\.\w+)?").unwrap());
+static URL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://[^\s]*[^\s.,;)]").unwrap());
+static FILE_PATH_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:\.\.?/)?(?:[\w.\-]+/)+[\w.\-]+(?:\.\w+)?").unwrap());
 
 // No-translate markers: [[text]] and ==text==
-static WIKI_MARKER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\[\[([^\]]+)\]\]").unwrap());
-static HIGHLIGHT_MARKER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"==([^=]+)==").unwrap());
+static WIKI_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[\[([^\]]+)\]\]").unwrap());
+static HIGHLIGHT_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"==([^=]+)==").unwrap());
 
 // English technical terms: camelCase, PascalCase, SCREAMING_CASE, snake_case identifiers
 // Matches: getUserData, API_KEY, MyClass, fetch_results, MAX_SIZE, getURLData, XMLParser
-static ENGLISH_TERM_RE: Lazy<Regex> = Lazy::new(|| {
+static ENGLISH_TERM_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?x)
         # camelCase with acronyms: getURLData, parseXMLFile, myHTTPClient
         [a-z]+(?:[A-Z]+[a-z]*)+  |
@@ -611,24 +611,16 @@ pub fn get_term_detector(use_nlp: bool) -> Box<dyn TermDetector> {
 
 /// Configuration for preservation behavior
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct PreserveConfig {
     /// Enable [[...]] wiki-style markers
-    #[serde(default = "default_true")]
     pub wiki_markers: bool,
     /// Enable ==...== highlight-style markers
-    #[serde(default = "default_true")]
     pub highlight_markers: bool,
     /// Enable auto-detection of English technical terms in CJK text
-    #[serde(default = "default_true")]
     pub english_terms: bool,
     /// Use macOS NLP for term detection (macOS only, falls back to regex)
-    #[serde(default = "default_true")]
     pub use_nlp: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 impl Default for PreserveConfig {

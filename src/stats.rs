@@ -386,4 +386,54 @@ mod tests {
         let avg_cost = (INPUT_COST_PER_MTOK + OUTPUT_COST_PER_MTOK) / 2.0;
         assert_eq!(avg_cost, 45.0);
     }
+
+    #[test]
+    fn test_record_translation_output_exceeds_input() {
+        // When output > input (English expansion), saved should be 0 via saturating_sub
+        let temp_dir = tempfile::tempdir().unwrap();
+        let test_path = temp_dir.path().join("test_neg.json");
+
+        record_translation_to_path(&test_path, 50, 100);
+
+        let stats = load_stats_from_path(&test_path);
+        assert_eq!(stats.estimated_saved_tokens, 0);
+        assert_eq!(stats.total_input_tokens, 50);
+        assert_eq!(stats.total_output_tokens, 100);
+    }
+
+    #[test]
+    fn test_estimate_cost_savings_zero() {
+        assert_eq!(estimate_cost_savings(0), 0.0);
+    }
+
+    #[test]
+    fn test_format_stats_csv_empty() {
+        let stats = TokenStats::default();
+        let csv = format_stats_csv(&stats);
+        assert_eq!(
+            csv,
+            "date,translations,input_tokens,output_tokens,estimated_saved"
+        );
+    }
+
+    #[test]
+    fn test_atomic_write_preserves_on_failure() {
+        // Verify temp file is used (the .json.tmp extension)
+        let temp_dir = tempfile::tempdir().unwrap();
+        let test_path = temp_dir.path().join("test_atomic.json");
+
+        let stats = TokenStats {
+            total_translations: 42,
+            ..Default::default()
+        };
+        save_stats_to_path(&test_path, &stats);
+
+        // File should exist and be valid
+        let loaded = load_stats_from_path(&test_path);
+        assert_eq!(loaded.total_translations, 42);
+
+        // Temp file should not linger
+        let tmp_path = test_path.with_extension("json.tmp");
+        assert!(!tmp_path.exists());
+    }
 }

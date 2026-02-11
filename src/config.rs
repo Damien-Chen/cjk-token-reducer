@@ -2,174 +2,82 @@ use crate::preserver::PreserveConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-fn default_true() -> bool {
-    true
-}
-
 const CONFIG_FILENAME: &str = ".cjk-token.json";
 
 /// Cache configuration with serde defaults
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct CacheConfig {
-    #[serde(default = "default_cache_enabled")]
     pub enabled: bool,
-
-    #[serde(default = "default_ttl_days")]
     pub ttl_days: u32,
-
-    #[serde(default = "default_max_size_mb")]
     pub max_size_mb: u32,
-}
-
-/// Resilience configuration for retry, timeout, and circuit breaker
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResilienceConfig {
-    /// Request timeout in seconds (default: 30)
-    #[serde(default = "default_timeout_secs")]
-    pub timeout_secs: u64,
-
-    /// Connection timeout in seconds (default: 5)
-    #[serde(default = "default_connect_timeout_secs")]
-    pub connect_timeout_secs: u64,
-
-    /// Maximum retry attempts for transient failures (default: 3)
-    #[serde(default = "default_max_retries")]
-    pub max_retries: u32,
-
-    /// Base delay for exponential backoff in milliseconds (default: 200)
-    #[serde(default = "default_retry_base_delay_ms")]
-    pub retry_base_delay_ms: u64,
-
-    /// Circuit breaker failure threshold before opening (default: 5)
-    #[serde(default = "default_circuit_breaker_threshold")]
-    pub circuit_breaker_threshold: u32,
-
-    /// Circuit breaker reset timeout in seconds (default: 60)
-    #[serde(default = "default_circuit_breaker_reset_secs")]
-    pub circuit_breaker_reset_secs: u64,
-
-    /// Enable graceful fallback to passthrough on failure (default: true)
-    #[serde(default = "default_true")]
-    pub fallback_to_passthrough: bool,
-}
-
-// Resilience defaults
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
-const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 5;
-const DEFAULT_MAX_RETRIES: u32 = 3;
-const DEFAULT_RETRY_BASE_DELAY_MS: u64 = 200;
-const DEFAULT_CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
-const DEFAULT_CIRCUIT_BREAKER_RESET_SECS: u64 = 60;
-
-fn default_timeout_secs() -> u64 {
-    DEFAULT_TIMEOUT_SECS
-}
-fn default_connect_timeout_secs() -> u64 {
-    DEFAULT_CONNECT_TIMEOUT_SECS
-}
-fn default_max_retries() -> u32 {
-    DEFAULT_MAX_RETRIES
-}
-fn default_retry_base_delay_ms() -> u64 {
-    DEFAULT_RETRY_BASE_DELAY_MS
-}
-fn default_circuit_breaker_threshold() -> u32 {
-    DEFAULT_CIRCUIT_BREAKER_THRESHOLD
-}
-fn default_circuit_breaker_reset_secs() -> u64 {
-    DEFAULT_CIRCUIT_BREAKER_RESET_SECS
-}
-
-impl Default for ResilienceConfig {
-    fn default() -> Self {
-        Self {
-            timeout_secs: DEFAULT_TIMEOUT_SECS,
-            connect_timeout_secs: DEFAULT_CONNECT_TIMEOUT_SECS,
-            max_retries: DEFAULT_MAX_RETRIES,
-            retry_base_delay_ms: DEFAULT_RETRY_BASE_DELAY_MS,
-            circuit_breaker_threshold: DEFAULT_CIRCUIT_BREAKER_THRESHOLD,
-            circuit_breaker_reset_secs: DEFAULT_CIRCUIT_BREAKER_RESET_SECS,
-            fallback_to_passthrough: true,
-        }
-    }
-}
-
-// Cache defaults
-const DEFAULT_CACHE_ENABLED: bool = true;
-const DEFAULT_TTL_DAYS: u32 = 30;
-const DEFAULT_MAX_SIZE_MB: u32 = 10;
-
-fn default_cache_enabled() -> bool {
-    DEFAULT_CACHE_ENABLED
-}
-fn default_ttl_days() -> u32 {
-    DEFAULT_TTL_DAYS
-}
-fn default_max_size_mb() -> u32 {
-    DEFAULT_MAX_SIZE_MB
 }
 
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
-            enabled: DEFAULT_CACHE_ENABLED,
-            ttl_days: DEFAULT_TTL_DAYS,
-            max_size_mb: DEFAULT_MAX_SIZE_MB,
+            enabled: true,
+            ttl_days: 30,
+            max_size_mb: 10,
+        }
+    }
+}
+
+/// Resilience configuration for retry, timeout, and circuit breaker
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ResilienceConfig {
+    /// Request timeout in seconds (default: 30)
+    pub timeout_secs: u64,
+    /// Connection timeout in seconds (default: 5)
+    pub connect_timeout_secs: u64,
+    /// Maximum retry attempts for transient failures (default: 3)
+    pub max_retries: u32,
+    /// Base delay for exponential backoff in milliseconds (default: 200)
+    pub retry_base_delay_ms: u64,
+    /// Circuit breaker failure threshold before opening (default: 5)
+    pub circuit_breaker_threshold: u32,
+    /// Circuit breaker reset timeout in seconds (default: 60)
+    pub circuit_breaker_reset_secs: u64,
+    /// Enable graceful fallback to passthrough on failure (default: true)
+    pub fallback_to_passthrough: bool,
+}
+
+impl Default for ResilienceConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 30,
+            connect_timeout_secs: 5,
+            max_retries: 3,
+            retry_base_delay_ms: 200,
+            circuit_breaker_threshold: 5,
+            circuit_breaker_reset_secs: 60,
+            fallback_to_passthrough: true,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct Config {
-    #[serde(default = "default_output_language")]
     pub output_language: String,
-
-    #[serde(default = "default_enable_stats")]
     pub enable_stats: bool,
-
-    #[serde(default = "default_threshold")]
     pub threshold: f64,
-
     /// Collapse internal whitespace to single spaces for token reduction.
     /// WARNING: This destroys code indentation. Only enable for non-code prompts.
     /// Default: false (safe)
-    #[serde(default)]
     pub normalize_whitespace: bool,
-
-    #[serde(default)]
     pub cache: CacheConfig,
-
-    #[serde(default)]
     pub preserve: PreserveConfig,
-
-    #[serde(default)]
     pub resilience: ResilienceConfig,
-}
-
-// Config defaults
-const DEFAULT_OUTPUT_LANGUAGE: &str = "en";
-const DEFAULT_ENABLE_STATS: bool = true;
-const DEFAULT_THRESHOLD: f64 = 0.1;
-
-fn default_output_language() -> String {
-    DEFAULT_OUTPUT_LANGUAGE.into()
-}
-fn default_enable_stats() -> bool {
-    DEFAULT_ENABLE_STATS
-}
-fn default_threshold() -> f64 {
-    DEFAULT_THRESHOLD
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            output_language: DEFAULT_OUTPUT_LANGUAGE.into(),
-            enable_stats: DEFAULT_ENABLE_STATS,
-            threshold: DEFAULT_THRESHOLD,
+            output_language: "en".into(),
+            enable_stats: true,
+            threshold: 0.1,
             normalize_whitespace: false,
             cache: CacheConfig::default(),
             preserve: PreserveConfig::default(),
@@ -334,5 +242,58 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.resilience.max_retries, 3);
         assert!(config.resilience.fallback_to_passthrough);
+    }
+
+    #[test]
+    fn test_cache_config_deserialization() {
+        let json = r#"{"enabled": false, "ttlDays": 7, "maxSizeMb": 5}"#;
+        let config: CacheConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.enabled);
+        assert_eq!(config.ttl_days, 7);
+        assert_eq!(config.max_size_mb, 5);
+    }
+
+    #[test]
+    fn test_cache_config_partial_deserialization() {
+        // Only override ttlDays, rest should be defaults
+        let json = r#"{"ttlDays": 14}"#;
+        let config: CacheConfig = serde_json::from_str(json).unwrap();
+        assert!(config.enabled); // default
+        assert_eq!(config.ttl_days, 14);
+        assert_eq!(config.max_size_mb, 10); // default
+    }
+
+    #[test]
+    fn test_config_with_nested_cache() {
+        let json = r#"{"cache": {"enabled": false, "ttlDays": 1}}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(!config.cache.enabled);
+        assert_eq!(config.cache.ttl_days, 1);
+        assert_eq!(config.cache.max_size_mb, 10); // default
+    }
+
+    #[test]
+    fn test_config_serialization_roundtrip() {
+        let config = Config::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.output_language, config.output_language);
+        assert_eq!(deserialized.threshold, config.threshold);
+        assert_eq!(deserialized.enable_stats, config.enable_stats);
+        assert_eq!(deserialized.cache.enabled, config.cache.enabled);
+        assert_eq!(deserialized.cache.ttl_days, config.cache.ttl_days);
+        assert_eq!(
+            deserialized.resilience.max_retries,
+            config.resilience.max_retries
+        );
+    }
+
+    #[test]
+    fn test_resilience_config_fallback_override() {
+        let json = r#"{"fallbackToPassthrough": false}"#;
+        let config: ResilienceConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.fallback_to_passthrough);
+        // Other fields should still be defaults
+        assert_eq!(config.timeout_secs, 30);
     }
 }

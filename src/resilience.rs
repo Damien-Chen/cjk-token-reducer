@@ -634,4 +634,78 @@ mod tests {
 
         assert_eq!(rl.rate_limit_hits(), 3);
     }
+
+    #[test]
+    fn test_rate_limiter_reset() {
+        let rl = RateLimiter::new();
+        rl.record_rate_limit(Some(10));
+        assert!(rl.current_delay_ms() > 0);
+
+        rl.reset();
+        assert_eq!(rl.current_delay_ms(), 0);
+    }
+
+    #[test]
+    fn test_rate_limiter_default_trait() {
+        let rl = RateLimiter::default();
+        assert_eq!(rl.current_delay_ms(), 0);
+        assert_eq!(rl.rate_limit_hits(), 0);
+    }
+
+    #[test]
+    fn test_rate_limiter_success_no_delay_noop() {
+        // When delay is 0, record_success should be a noop
+        let rl = RateLimiter::new();
+        rl.record_success();
+        assert_eq!(rl.current_delay_ms(), 0);
+    }
+
+    #[test]
+    fn test_rate_limiter_exponential_backoff_progression() {
+        let rl = RateLimiter::new();
+
+        // Each call should at least double
+        rl.record_rate_limit(None); // 100 -> 200
+        let d1 = rl.current_delay_ms();
+        rl.record_rate_limit(None); // 200 -> 400
+        let d2 = rl.current_delay_ms();
+        rl.record_rate_limit(None); // 400 -> 800
+        let d3 = rl.current_delay_ms();
+
+        assert!(d2 > d1, "d2 ({}) should be > d1 ({})", d2, d1);
+        assert!(d3 > d2, "d3 ({}) should be > d2 ({})", d3, d2);
+    }
+
+    #[test]
+    fn test_circuit_breaker_failure_during_open_no_extend() {
+        let base_time = 4000u64;
+        let mock_time = MockTimeGuard::new(base_time);
+
+        let cb = CircuitBreaker::with_params(2, 10);
+
+        cb.record_failure();
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Open);
+
+        // Record more failures 5s later
+        mock_time.set(base_time + 5);
+        cb.record_failure();
+
+        // opened_at should still be base_time, not base_time+5
+        let opened = cb.opened_at.load(Ordering::Acquire);
+        assert_eq!(opened, base_time);
+    }
+
+    #[test]
+    fn test_circuit_breaker_new_from_config() {
+        let config = ResilienceConfig {
+            circuit_breaker_threshold: 10,
+            circuit_breaker_reset_secs: 120,
+            ..Default::default()
+        };
+        let cb = CircuitBreaker::new(&config);
+        assert_eq!(cb.threshold, 10);
+        assert_eq!(cb.reset_timeout_secs, 120);
+        assert_eq!(cb.state(), CircuitState::Closed);
+    }
 }

@@ -169,10 +169,6 @@ impl Error {
 /// Crate-level Result type alias for convenience
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Backward compatibility alias
-#[deprecated(note = "Use Error instead")]
-pub type TokenSaverError = Error;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,8 +209,17 @@ mod tests {
         }
         .is_retryable());
         assert!(Error::Timeout.is_retryable());
+        assert!(Error::ConnectionFailed.is_retryable());
         assert!(!Error::Config {
             message: "bad config".into()
+        }
+        .is_retryable());
+        assert!(!Error::AuthError {
+            status: StatusCode::UNAUTHORIZED
+        }
+        .is_retryable());
+        assert!(!Error::QuotaExceeded {
+            status: StatusCode::PAYMENT_REQUIRED
         }
         .is_retryable());
     }
@@ -268,5 +273,96 @@ mod tests {
 
         let err = Error::Timeout;
         assert_eq!(err.retry_after_secs(), None);
+    }
+
+    #[test]
+    fn test_error_category_advice_all_variants() {
+        // Every category should return non-empty advice
+        let categories = [
+            ErrorCategory::Auth,
+            ErrorCategory::RateLimit,
+            ErrorCategory::Quota,
+            ErrorCategory::Network,
+            ErrorCategory::Server,
+            ErrorCategory::Client,
+            ErrorCategory::Config,
+            ErrorCategory::Cache,
+            ErrorCategory::Unknown,
+        ];
+        for cat in categories {
+            assert!(!cat.advice().is_empty(), "{:?} should have advice", cat);
+        }
+    }
+
+    #[test]
+    fn test_error_display_all_variants() {
+        // Every error variant should produce a non-empty Display string
+        let errors: Vec<Error> = vec![
+            Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "test")),
+            Error::Json(serde_json::from_str::<()>("bad").unwrap_err()),
+            Error::RateLimited {
+                retry_after_secs: Some(10),
+            },
+            Error::RetryableHttp {
+                status: StatusCode::BAD_GATEWAY,
+            },
+            Error::AuthError {
+                status: StatusCode::UNAUTHORIZED,
+            },
+            Error::QuotaExceeded {
+                status: StatusCode::PAYMENT_REQUIRED,
+            },
+            Error::Translation {
+                message: "test".into(),
+            },
+            Error::Config {
+                message: "test".into(),
+            },
+            Error::Cache {
+                message: "test".into(),
+            },
+            Error::CircuitOpen(30),
+            Error::Timeout,
+            Error::ConnectionFailed,
+        ];
+        for err in errors {
+            let msg = err.to_string();
+            assert!(!msg.is_empty(), "{:?} should have Display output", err);
+        }
+    }
+
+    #[test]
+    fn test_category_all_error_variants() {
+        // Test category() for variants not covered by other tests
+        let io_err = Error::Io(std::io::Error::new(std::io::ErrorKind::Other, "test"));
+        assert_eq!(io_err.category(), ErrorCategory::Cache);
+
+        let json_err = Error::Json(serde_json::from_str::<()>("bad").unwrap_err());
+        assert_eq!(json_err.category(), ErrorCategory::Client);
+
+        let translation_err = Error::Translation {
+            message: "test".into(),
+        };
+        assert_eq!(translation_err.category(), ErrorCategory::Client);
+
+        let circuit_err = Error::CircuitOpen(60);
+        assert_eq!(circuit_err.category(), ErrorCategory::Server);
+
+        let conn_err = Error::ConnectionFailed;
+        assert_eq!(conn_err.category(), ErrorCategory::Network);
+    }
+
+    #[test]
+    fn test_from_status_client_error() {
+        // 400 BAD_REQUEST should become Translation variant
+        let err = Error::from_status(StatusCode::BAD_REQUEST);
+        assert!(matches!(err, Error::Translation { .. }));
+        assert_eq!(err.category(), ErrorCategory::Client);
+    }
+
+    #[test]
+    fn test_from_status_with_retry_after() {
+        let err = Error::from_status_with_retry_after(StatusCode::TOO_MANY_REQUESTS, Some(42));
+        assert_eq!(err.retry_after_secs(), Some(42));
     }
 }

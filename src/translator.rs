@@ -555,8 +555,6 @@ pub fn reset_resilience_state() {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::error::{Error, ErrorCategory};
-    use reqwest::StatusCode;
 
     #[test]
     fn test_output_language_instruction() {
@@ -572,6 +570,13 @@ mod tests {
         let chunks = chunk_text(text);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0], text);
+    }
+
+    #[test]
+    fn test_chunk_text_empty() {
+        let chunks = chunk_text("");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], "");
     }
 
     #[test]
@@ -914,243 +919,35 @@ mod tests {
     }
 
     #[test]
-    fn test_error_category_from_http_status() {
-        // Test various HTTP status code classifications
-        assert_eq!(
-            Error::from_status(StatusCode::UNAUTHORIZED).category(),
-            ErrorCategory::Auth
-        );
-        assert_eq!(
-            Error::from_status(StatusCode::FORBIDDEN).category(),
-            ErrorCategory::Auth
-        );
-        assert_eq!(
-            Error::from_status(StatusCode::TOO_MANY_REQUESTS).category(),
-            ErrorCategory::RateLimit
-        );
-        assert_eq!(
-            Error::from_status(StatusCode::PAYMENT_REQUIRED).category(),
-            ErrorCategory::Quota
-        );
-        assert_eq!(
-            Error::from_status(StatusCode::BAD_REQUEST).category(),
-            ErrorCategory::Client
-        );
-        assert_eq!(
-            Error::from_status(StatusCode::INTERNAL_SERVER_ERROR).category(),
-            ErrorCategory::Server
-        );
-        assert_eq!(
-            Error::from_status(StatusCode::BAD_GATEWAY).category(),
-            ErrorCategory::Server
-        );
-    }
-
-    #[test]
-    fn test_error_retryable() {
-        // Test which errors are retryable
-        assert!(Error::RateLimited {
-            retry_after_secs: None
+    fn test_user_agent_rotation_cycles() {
+        // Verify round-robin cycles through all agents.
+        // Only check that we see every agent -- don't assert on UA_COUNTER value
+        // because other tests running in parallel may also call get_user_agent().
+        let mut seen = std::collections::HashSet::new();
+        // Call enough times to guarantee full coverage even with concurrent increments
+        for _ in 0..USER_AGENTS.len() * 2 {
+            seen.insert(get_user_agent());
         }
-        .is_retryable());
-        assert!(Error::RetryableHttp {
-            status: StatusCode::SERVICE_UNAVAILABLE
-        }
-        .is_retryable());
-        assert!(Error::Timeout.is_retryable());
-        assert!(Error::ConnectionFailed.is_retryable());
-
-        assert!(!Error::Config {
-            message: "bad config".into()
-        }
-        .is_retryable());
-        assert!(!Error::AuthError {
-            status: StatusCode::UNAUTHORIZED
-        }
-        .is_retryable());
-        assert!(!Error::QuotaExceeded {
-            status: StatusCode::PAYMENT_REQUIRED
-        }
-        .is_retryable());
+        assert_eq!(seen.len(), USER_AGENTS.len());
     }
 
     #[test]
-    fn test_get_http_client() {
-        // Verify that we can get an HTTP client without error
-        let _client = get_http_client();
-        // The mere fact that we got the client without panic is sufficient
-    }
-
-    #[test]
-    fn test_user_agents_pool() {
-        // Verify that USER_AGENTS contains expected values
-        assert!(!USER_AGENTS.is_empty());
-        for ua in USER_AGENTS {
-            assert!(!ua.is_empty());
-            assert!(ua.contains("Mozilla/5.0"));
-        }
-    }
-
-    #[test]
-    fn test_ua_counter_initial_value() {
-        // Test that the counter is accessible
-        let initial = UA_COUNTER.load(Ordering::Relaxed);
-        // Verify counter is within valid range for USER_AGENTS rotation
-        assert!(initial < usize::MAX);
-    }
-
-    #[test]
-    fn test_get_user_agent_returns_valid() {
-        let ua = get_user_agent();
-        assert!(USER_AGENTS.contains(&ua));
-    }
-
-    #[test]
-    fn test_max_chunk_size_constant() {
-        // Verify constant is accessible and non-zero
-        assert_ne!(MAX_CHUNK_SIZE, 0);
-    }
-
-    #[test]
-    fn test_max_concurrent_translations_constant() {
-        // Verify the constant is set appropriately
-        assert_eq!(MAX_CONCURRENT_TRANSLATIONS, 5);
-    }
-
-    #[test]
-    fn test_google_translate_url_constant() {
-        // Verify the URL is set correctly
-        assert_eq!(
-            GOOGLE_TRANSLATE_URL,
-            "https://translate.googleapis.com/translate_a/single"
-        );
-    }
-
-    #[test]
-    fn test_get_resilience_stats() {
-        // Verify that we can get resilience stats without error
+    fn test_resilience_stats_accessible() {
         let stats = get_resilience_stats();
-        // Verify struct is accessible (rate_limit_hits is usize, always valid)
-        let _ = stats.rate_limit_hits;
+        // Verify struct fields are consistent
+        assert!(stats.rate_limit_delay_ms < u64::MAX);
+        assert_eq!(
+            stats.circuit_breaker.state,
+            crate::resilience::CircuitState::Closed
+        );
     }
 
     #[test]
-    fn test_reset_resilience_state() {
-        // Verify that we can reset resilience state without error
+    fn test_reset_resilience_clears_delay() {
+        let rl = get_rate_limiter();
+        rl.record_rate_limit(Some(5));
+        assert!(rl.current_delay_ms() > 0);
         reset_resilience_state();
-    }
-
-    #[test]
-    fn test_normalize_whitespace_internal_empty() {
-        assert_eq!(normalize_whitespace_internal(""), "");
-    }
-
-    #[test]
-    fn test_normalize_whitespace_internal_single_word() {
-        assert_eq!(normalize_whitespace_internal("hello"), "hello");
-    }
-
-    #[test]
-    fn test_normalize_whitespace_internal_multiple_spaces() {
-        assert_eq!(
-            normalize_whitespace_internal("hello    world"),
-            "hello world"
-        );
-    }
-
-    #[test]
-    fn test_normalize_whitespace_internal_tabs() {
-        assert_eq!(
-            normalize_whitespace_internal("hello\t\tworld"),
-            "hello world"
-        );
-    }
-
-    #[test]
-    fn test_normalize_whitespace_internal_mixed_whitespace() {
-        assert_eq!(
-            normalize_whitespace_internal("hello \t\n world"),
-            "hello world"
-        );
-    }
-
-    #[test]
-    fn test_normalize_whitespace_internal_leading_trailing() {
-        assert_eq!(
-            normalize_whitespace_internal("  hello world  "),
-            "hello world"
-        );
-    }
-
-    #[test]
-    fn test_chunk_text_empty() {
-        let chunks = chunk_text("");
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0], "");
-    }
-
-    #[test]
-    fn test_chunk_text_shorter_than_max() {
-        let text = "Short text";
-        let chunks = chunk_text(text);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0], text);
-    }
-
-    #[test]
-    fn test_chunk_text_exactly_max_size_additional() {
-        let text = "a".repeat(MAX_CHUNK_SIZE);
-        let chunks = chunk_text(&text);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0], text);
-    }
-
-    #[test]
-    fn test_translation_result_debug_format() {
-        let result = TranslationResult {
-            original: "Hello".to_string(),
-            translated: "Bonjour".to_string(),
-            was_translated: true,
-            source_language: Language::English,
-            input_tokens: 10,
-            output_tokens: 12,
-            cache_hit: false,
-        };
-
-        // Just ensure it doesn't panic when debug formatted
-        let _debug_str = format!("{:?}", result);
-    }
-
-    #[test]
-    fn test_translation_result_equality() {
-        let result1 = TranslationResult {
-            original: "Hello".to_string(),
-            translated: "Bonjour".to_string(),
-            was_translated: true,
-            source_language: Language::English,
-            input_tokens: 10,
-            output_tokens: 12,
-            cache_hit: false,
-        };
-
-        let result2 = TranslationResult {
-            original: "Hello".to_string(),
-            translated: "Bonjour".to_string(),
-            was_translated: true,
-            source_language: Language::English,
-            input_tokens: 10,
-            output_tokens: 12,
-            cache_hit: false,
-        };
-
-        // We can't directly compare TranslationResult as it doesn't implement PartialEq,
-        // but we can verify the fields are as expected
-        assert_eq!(result1.original, result2.original);
-        assert_eq!(result1.translated, result2.translated);
-        assert_eq!(result1.was_translated, result2.was_translated);
-        assert_eq!(result1.source_language, result2.source_language);
-        assert_eq!(result1.input_tokens, result2.input_tokens);
-        assert_eq!(result1.output_tokens, result2.output_tokens);
-        assert_eq!(result1.cache_hit, result2.cache_hit);
+        assert_eq!(rl.current_delay_ms(), 0);
     }
 }
