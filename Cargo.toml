@@ -20,8 +20,8 @@ path = "src/lib.rs"
 
 [features]
 default = ["cache", "tokenizer", "colored-output"]
-# Translation cache with sled DB
-cache = ["dep:sled", "dep:sha2", "dep:hex"]
+# Translation cache with sled DB + postcard binary serialization
+cache = ["dep:sled", "dep:sha2", "dep:hex", "dep:postcard"]
 # Claude tokenizer for precise token counting
 tokenizer = ["dep:claude-tokenizer"]
 # Colored terminal output
@@ -46,6 +46,7 @@ fastrand = "2"  # Lightweight RNG for retry jitter
 sled = { version = "0.34", optional = true }
 sha2 = { version = "0.10", optional = true }
 hex = { version = "0.4", optional = true }
+postcard = { version = "1", features = ["alloc"], optional = true }
 
 # Optional: Colored output
 colored = { version = "2", optional = true }

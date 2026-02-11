@@ -176,7 +176,7 @@ mod cache_impl {
         /// Get cached translation if available and not expired
         pub fn get(&self, key: &str) -> Option<CacheEntry> {
             match self.db.get(key) {
-                Ok(Some(bytes)) => match serde_json::from_slice::<CacheEntry>(&bytes) {
+                Ok(Some(bytes)) => match postcard::from_bytes::<CacheEntry>(&bytes) {
                     Ok(entry) => {
                         let now = Utc::now().timestamp();
                         let ttl_secs = self.config.ttl_days as i64 * 24 * 60 * 60;
@@ -190,6 +190,7 @@ mod cache_impl {
                         }
                     }
                     Err(_) => {
+                        let _ = self.db.remove(key);
                         CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
                         None
                     }
@@ -203,7 +204,7 @@ mod cache_impl {
 
         /// Store translation in cache
         pub fn put(&self, key: &str, entry: &CacheEntry) {
-            if let Ok(bytes) = serde_json::to_vec(entry) {
+            if let Ok(bytes) = postcard::to_allocvec(entry) {
                 let entry_size = bytes.len();
                 let _ = self.db.insert(key, bytes);
 
