@@ -10,6 +10,7 @@ use cjk_token_reducer::{
     translator::{build_output_language_instruction, translate_to_english_with_options},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::io::{self, IsTerminal, Read};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -67,8 +68,6 @@ fn read_prompt_from_stdin() -> Option<String> {
 
 #[tokio::main]
 async fn main() {
-    use std::collections::HashSet;
-
     let args: Vec<String> = std::env::args().collect();
     let args_set: HashSet<&str> = args.iter().map(|s| s.as_str()).collect();
     let use_cache = !args_set.contains("--no-cache");
@@ -109,7 +108,7 @@ async fn main() {
             return;
         }
         Some("--tokenize") => {
-            handle_tokenize(&args);
+            handle_tokenize(&args_set);
             return;
         }
         Some("--show-preserved") => {
@@ -364,10 +363,7 @@ fn handle_show_preserved() {
     println!("{}", preserved.text.dimmed());
 }
 
-fn handle_tokenize(args: &[String]) {
-    use std::collections::HashSet;
-
-    let args_set: HashSet<&str> = args.iter().map(|s| s.as_str()).collect();
+fn handle_tokenize(args_set: &HashSet<&str>) {
     let prompt = match read_prompt_from_stdin() {
         Some(p) if p.is_empty() => {
             print_error("No input provided");
