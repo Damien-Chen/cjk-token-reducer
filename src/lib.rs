@@ -2,6 +2,7 @@ pub mod cache;
 pub mod config;
 pub mod detector;
 pub mod error;
+pub mod local_translator;
 pub mod output;
 pub mod preserver;
 pub mod resilience;

@@ -3,6 +3,7 @@ use crate::{
     config::{Config, ResilienceConfig},
     detector::{detect_language, Language},
     error::{Error, Result},
+    local_translator,
     preserver::{extract_and_preserve_with_config, restore_preserved},
     resilience::{CircuitBreaker, CircuitBreakerStats, RateLimiter},
     tokenizer::count_tokens,
@@ -411,13 +412,19 @@ pub async fn translate_to_english_with_options(
         }
     }
 
-    // Call Google Translate (with chunking for long inputs)
-    let translated_text = translate_with_chunking(
-        &text_for_translation,
-        detection.language,
-        &config.resilience,
-    )
-    .await?;
+    // Call translation backend (with chunking for long inputs)
+    let translated_text = if config.translation_backend == "opus-mt" {
+        // Local Opus-MT translation via rust-bert (fully offline)
+        local_translator::translate_local(&text_for_translation, detection.language).await?
+    } else {
+        // Google Translate (default, requires internet)
+        translate_with_chunking(
+            &text_for_translation,
+            detection.language,
+            &config.resilience,
+        )
+        .await?
+    };
 
     // Store in cache (reuse opened instance)
     if let Some(ref c) = cache {

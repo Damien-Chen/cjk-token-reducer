@@ -63,6 +63,8 @@ pub struct Config {
     pub output_language: String,
     pub enable_stats: bool,
     pub threshold: f64,
+    /// Translation backend: "google" (default) or "opus-mt" (local, requires local-translate feature)
+    pub translation_backend: String,
     /// Collapse internal whitespace to single spaces for token reduction.
     /// WARNING: This destroys code indentation. Only enable for non-code prompts.
     /// Default: false (safe)
@@ -78,6 +80,7 @@ impl Default for Config {
             output_language: "en".into(),
             enable_stats: true,
             threshold: 0.1,
+            translation_backend: "google".into(),
             normalize_whitespace: false,
             cache: CacheConfig::default(),
             preserve: PreserveConfig::default(),
@@ -112,6 +115,9 @@ pub fn load_config() -> Config {
     }
     if let Ok(val) = std::env::var("CJK_TOKEN_CACHE_ENABLED") {
         config.cache.enabled = val.to_lowercase() == "true" || val == "1";
+    }
+    if let Ok(val) = std::env::var("CJK_TOKEN_BACKEND") {
+        config.translation_backend = val;
     }
 
     config
@@ -174,7 +180,6 @@ mod tests {
         assert!(config.wiki_markers);
         assert!(config.highlight_markers);
         assert!(config.english_terms);
-        assert!(config.use_nlp);
     }
 
     #[test]
@@ -185,7 +190,6 @@ mod tests {
         assert!(config.wiki_markers);
         assert!(config.highlight_markers);
         assert!(config.english_terms);
-        assert!(config.use_nlp);
     }
 
     #[test]
@@ -196,7 +200,6 @@ mod tests {
         assert!(!config.wiki_markers); // overridden
         assert!(config.highlight_markers); // default
         assert!(config.english_terms); // default
-        assert!(config.use_nlp); // default
     }
 
     #[test]
@@ -206,13 +209,11 @@ mod tests {
         assert!(all_config.wiki_markers);
         assert!(all_config.highlight_markers);
         assert!(all_config.english_terms);
-        assert!(all_config.use_nlp);
 
         let basic_config = PreserveConfig::basic();
         assert!(!basic_config.wiki_markers);
         assert!(!basic_config.highlight_markers);
         assert!(!basic_config.english_terms);
-        assert!(!basic_config.use_nlp);
     }
 
     #[test]

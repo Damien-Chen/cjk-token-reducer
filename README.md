@@ -38,15 +38,24 @@ Writing in CJK incurs a "tax" on both cost and memory.
 CJK Token Reducer translates your CJK input to English before sending it to Claude.
 English is the "native language" of LLM tokenizers, so translation acts as a compression layer.
 
+### Translation Backends
+
+This tool supports two translation backends:
+
+| Backend | Privacy | Setup | Quality | Latency |
+|---------|---------|-------|---------|---------|
+| **Google Translate** (default) | Text sent to Google servers | Zero setup | Good | 100-300ms |
+| **Opus-MT** (local) | 100% offline, nothing leaves your machine | Requires libtorch | Good (BLEU 36-41) | 0.5-3s |
+
 ### Key Features
 - Reduces input token count by 35-50% (up to 2x effective context window)
+- **Local offline translation** via Opus-MT models (optional, fully private)
 - Preserves code blocks, file paths, and URLs (not sent for translation)
 - Auto-detects English technical terms (camelCase, PascalCase, SCREAMING_SNAKE_CASE)
-- macOS: Uses Apple NaturalLanguage framework for intelligent named entity recognition
 - Caches translations locally to eliminate redundant API calls
-- Uses free Google Translate API (no API key required)
+- Default backend uses free Google Translate API (no API key required)
 - Sends only prompt text for translation; code artifacts stay local
-- Adds 100-300ms latency per translation
+- Adds 100-300ms latency per translation (Google) or 0.5-3s (local Opus-MT)
 
 ### Trade-offs and Limitations
 This tool implements a "Translate-Compute-Translate" (TCT) pattern.
@@ -56,7 +65,7 @@ While effective, it has inherent trade-offs:
 |--------|--------|
 | Semantic Fidelity | Translation is lossy. Technical terms may shift meaning. Use `[[markers]]` to preserve critical terms. |
 | Cultural Nuance | High-context CJK expressions may lose nuance when converted to English. |
-| Latency | Adds 1-3 API calls. Suitable for async/batch workflows; less ideal for real-time chat. |
+| Latency | Adds 1-3 API calls (Google) or 0.5-3s inference (Opus-MT). Suitable for async/batch workflows; less ideal for real-time chat. |
 | Back-translation | Output translated back to CJK may sound unnatural ("translationese"). |
 
 When NOT to use this tool:
@@ -73,11 +82,11 @@ Mitigation strategies:
 
 ### Option 1: Cargo Install (Recommended)
 ```shell
-# Linux/Windows
+# Default (Google Translate backend)
 cargo install --git https://github.com/jserv/cjk-token-reducer
 
-# macOS (with NLP support)
-cargo install --git https://github.com/jserv/cjk-token-reducer --features macos-nlp
+# With local offline translation (Opus-MT, requires libtorch)
+cargo install --git https://github.com/jserv/cjk-token-reducer --features local-translate
 ```
 
 ### Option 2: Build from Source
@@ -85,11 +94,11 @@ cargo install --git https://github.com/jserv/cjk-token-reducer --features macos-
 git clone https://github.com/jserv/cjk-token-reducer
 cd cjk-token-reducer
 
-# Linux/Windows
+# Default build (Google Translate backend)
 cargo build --release
 
-# macOS (with NLP support)
-cargo build --release --features macos-nlp
+# With local offline translation (requires libtorch)
+cargo build --release --features local-translate
 
 # Install (builds if needed, installs binary, configures Claude hook)
 make install
@@ -103,6 +112,31 @@ If you prefer manual installation:
 cp target/release/cjk-token-reducer ~/.local/bin/
 export PATH="$HOME/.local/bin:$PATH"
 ```
+
+### Setting Up Local Translation (Opus-MT)
+To use the fully offline `opus-mt` backend, you need libtorch installed:
+
+**Linux:**
+```shell
+pip install torch
+export LIBTORCH_USE_PYTORCH=1
+# Add to ~/.bashrc or ~/.zshrc for persistence
+```
+
+**Windows (PowerShell):**
+```powershell
+pip install torch
+$Env:LIBTORCH_USE_PYTORCH = "1"
+# Add LIBTORCH_USE_PYTORCH to system environment variables for persistence
+```
+
+Then build with the `local-translate` feature:
+```shell
+cargo build --release --features local-translate
+```
+
+On first run with `opus-mt` backend, models (~300 MB per language pair) are automatically
+downloaded from HuggingFace Hub and cached locally at `~/.cache/.rustbert/`.
 
 ## Setup
 
@@ -181,6 +215,7 @@ The tool searches these locations in order:
 {
   "outputLanguage": "en",
   "threshold": 0.1,
+  "translationBackend": "google",
   "enableStats": true,
   "cache": {
     "enabled": true,
@@ -188,9 +223,15 @@ The tool searches these locations in order:
     "maxSizeMb": 10
   },
   "preserve": {
-    "englishTerms": true,
-    "useNlp": true
+    "englishTerms": true
   }
+}
+```
+
+To use local offline translation, set:
+```json
+{
+  "translationBackend": "opus-mt"
 }
 ```
 
@@ -199,12 +240,12 @@ The tool searches these locations in order:
 |--------|------|---------|-------------|
 | `outputLanguage` | string | `"en"` | Desired response language from Claude. See below. |
 | `threshold` | number | `0.1` | Ratio of CJK characters required to trigger translation (0.1 = 10%). |
+| `translationBackend` | string | `"google"` | Translation backend: `"google"` (online) or `"opus-mt"` (local offline). |
 | `enableStats` | boolean | `true` | Track and save token usage statistics. |
 | `cache.enabled` | boolean | `true` | Enable translation caching to reduce API calls. |
 | `cache.ttlDays` | number | `30` | Cache entry time-to-live in days. |
 | `cache.maxSizeMb` | number | `10` | Maximum cache size in megabytes. |
 | `preserve.englishTerms` | boolean | `true` | Auto-detect and preserve English technical terms in CJK text. |
-| `preserve.useNlp` | boolean | `true` | Use macOS NLP for named entity detection (macOS only, falls back to regex). |
 
 #### Data Storage Locations
 The tool stores translation cache and statistics in platform-specific directories:
@@ -212,12 +253,13 @@ The tool stores translation cache and statistics in platform-specific directorie
 | Platform | Cache Directory | Statistics Directory |
 |----------|-----------------|---------------------|
 | Linux | `~/.cache/cjk-token-reducer/` | `~/.config/cjk-token-reducer/` |
-| macOS | `~/Library/Caches/cjk-token-reducer/` | `~/Library/Application Support/cjk-token-reducer/` |
 | Windows | `%LOCALAPPDATA%\cjk-token-reducer\` | `%APPDATA%\cjk-token-reducer\` |
 
 Files within these directories:
 - `translations.db/` — sled embedded database for translation cache
 - `stats.json` — token usage statistics
+
+When using the `opus-mt` backend, Opus-MT models are cached at `~/.cache/.rustbert/`.
 
 #### Output Language Settings
 - `"en"` (default): Claude responds in English.
@@ -225,52 +267,18 @@ Files within these directories:
 - `"zh"`, `"ja"`, `"ko"`: Instructs Claude to reply in the specified language.
   Saves input tokens, but output remains in CJK and consumes more tokens than English output.
 
-#### Platform-Specific Features
-
-**macOS NLP Integration**
-
-On macOS, the tool leverages Apple's NaturalLanguage framework for intelligent named entity recognition.
-This provides ML-based detection of:
-
-| Entity Type | Examples | Benefit |
-|-------------|----------|---------|
-| Personal Names | Tim Cook, Elon Musk, Satya Nadella | Preserved without translation corruption |
-| Place Names | Silicon Valley, Tokyo, Seoul | Geographic terms stay intact |
-| Organization Names | Apple, Microsoft, Google | Company names remain recognizable |
-
-The NLP detector also supports extended Latin characters (e.g., "Rene", "Munchen", "Francois")
-while correctly filtering out CJK names that should be translated.
-
-**Comparison: NLP vs Regex Detection**
-
-| Aspect | Regex (All Platforms) | NLP (macOS) |
-|--------|----------------------|-------------|
-| Technical Terms | camelCase, PascalCase, SNAKE_CASE | Same + named entities |
-| Proper Names | Only if capitalized patterns match | ML-based recognition |
-| Context Awareness | Pattern-based only | Semantic understanding |
-| Performance | Faster | ~10-50ms overhead per call |
-
-To disable NLP and use regex-only detection on macOS:
-```json
-{
-  "preserve": {
-    "useNlp": false
-  }
-}
-```
-
 ## Usage
 Once installed and configured, use Claude Code normally.
 
 ```shell
 claude
-❯ 重構這個函式
+❯ 重構這個函式
 # Automatically translated to: "Refactor this function"
 
-❯ この関数をリファクタリングしてください
+❯ この関数をリファクタリングしてください
 # Automatically translated to: "Please refactor this function"
 
-❯ 이 함수 리팩토링 해줘
+❯ 이 함수 리팩토링 해줘
 # Automatically translated to: "Refactor this function"
 ```
 
@@ -311,28 +319,25 @@ Output example:
 ```
 
 ## Privacy & Security
-- Translation Service: This tool uses the public Google Translate API.
-  Your text prompts are sent to Google's servers.
-- Code Security: The tool preserves code blocks and file paths locally,
-  preventing them from being sent to the translation service.
+- **Google Translate backend** (default): Text prompts are sent to Google's servers.
+  Code blocks and file paths are preserved locally and never sent.
+- **Opus-MT backend** (`"translationBackend": "opus-mt"`): 100% offline.
+  All translation happens locally on your machine. No data is sent to any external server.
 - Data Handling: No data is stored by this tool other than local usage statistics (if enabled) and translation cache.
 
 ## Development
 ```shell
-# Build (Linux/Windows)
+# Build (default, Google Translate backend)
 cargo build
 
-# Build with NLP support (macOS only)
-cargo build --features macos-nlp
+# Build with local translation support
+cargo build --features local-translate
 
 # Run tests
 cargo test
 
-# Run tests with NLP (macOS only)
-cargo test --features macos-nlp
-
-# Build for release (macOS with NLP)
-cargo build --release --features macos-nlp
+# Build for release
+cargo build --release
 ```
 
 ## Alternatives
@@ -353,7 +358,8 @@ When to Choose LLMLingua:
 When to Choose cjk-token-reducer:
 - Daily Claude Code usage with CJK input
 - Simplicity over maximum compression
-- No additional model inference overhead
+- No additional model inference overhead (Google backend)
+- Full privacy with local translation (Opus-MT backend)
 - Code-heavy prompts (LLMLingua may corrupt code blocks)
 
 ## License
@@ -364,3 +370,4 @@ Use of this source code is governed by a MIT license that can be found in the [L
 * Petrov et al. (2023): [Language Model Tokenizers Introduce Unfairness Between Languages](https://arxiv.org/abs/2305.15425) - Analysis of tokenization disparity, showing up to 15x inefficiency for some languages.
 * Ahia et al. (2023): [Do All Languages Cost the Same? Tokenization in the Era of Commercial Language Models](https://arxiv.org/abs/2305.13704) - Examines cost implications of tokenizer design on non-English languages.
 * Yennie Jun: [All Languages Are NOT Created (Tokenized) Equal](https://www.artfish.ai/p/all-languages-are-not-created-tokenized) - Visualizations and statistics on cross-lingual tokenization efficiency.
+* Helsinki-NLP Opus-MT: [Open-source translation models](https://github.com/Helsinki-NLP/Opus-MT) - MarianMT models powering the local translation backend.
